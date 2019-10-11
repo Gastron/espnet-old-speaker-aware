@@ -7,7 +7,7 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=-1       # start from -1 if you need to start from data download
 ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
@@ -21,7 +21,7 @@ do_delta=false
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
+etype=blstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
@@ -39,7 +39,7 @@ aconv_filts=100
 mtlalpha=0.5
 
 # minibatch related
-batchsize=30
+batchsize=15
 maxlen_in=800  # if input length  > maxlen_in, batchsize is automatically reduced
 maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduced
 
@@ -83,62 +83,82 @@ set -e
 set -u
 set -o pipefail
 
-train_set=train_trim
-train_dev=dev_trim
-recog_set="dev test"
 
-if [ ${stage} -le -1 ]; then
-    echo "stage -1: Data Download"
-    local/download_data.sh
-fi
+ivec_extractor_dir=exp/ivec
+mkdir -p $ivec_extractor_dir
+train_set=train_trim_ivec_fixed
+dev_set=dev_trim_ivec_fixed
+recog_set="dev_ivec_fixed test_ivec_fixed"
 
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
     ### But you can utilize Kaldi recipes in most cases
     echo "stage 0: Data preparation"
-    local/prepare_data.sh
-    for dset in dev test train; do
-    utils/data/modify_speaker_info.sh --seconds-per-spk-max 180 data/${dset}.orig data/${dset}
-    done
+    echo "NOTE: You should have the basic data directories from the normal run.sh already"
+    utils/copy_data_dir.sh data/train_trim data/${train_set}
+    utils/copy_data_dir.sh data/dev_trim data/${dev_set}
+    utils/copy_data_dir.sh data/dev data/dev_ivec
+    utils/copy_data_dir.sh data/test data/test_ivec
+    cp data/train_trim/cmvn.ark data/train_trim_ivec/
 fi
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
-feat_dt_dir=${dumpdir}/${train_dev}/delta${do_delta}; mkdir -p ${feat_dt_dir}
-if [ ${stage} -le 1 ]; then
-    ### Task dependent. You have to design training and dev sets by yourself.
-    ### But you can utilize Kaldi recipes in most cases
-    echo "stage 1: Feature Generation"
-    fbankdir=fbank
-    # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
-    for x in test dev train; do
-        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 32 --write_utt2num_frames true \
-            data/${x} exp/make_fbank/${x} ${fbankdir}
+feat_dt_dir=${dumpdir}/${dev_set}/delta${do_delta}; mkdir -p ${feat_dt_dir}
+
+if [ ${stage} -le 2 ]; then
+    #Setup diagonal UBM train data: 
+    temp_data_root=$ivec_extractor_dir/diag_ubm
+    num_utts_total=$(wc -l <data/${train_set}/utt2spk)
+    num_utts=$[$num_utts_total/4]
+    utils/data/subset_data_dir.sh data/${train_set} \
+        $num_utts ${temp_data_root}/${train_set}_subset
+
+    sid/train_diag_ubm.sh --cmd "$train_cmd" --nj 30 \
+      --num-threads 8 \
+      ${temp_data_root}/${train_set}_subset 512 \
+      $ivec_extractor_dir/diag_ubm
+    sid/train_full_ubm.sh --cmd "$train_cmd --mem 25G" \
+      --nj 40 --remove-low-count-gaussians false \
+      data/train \
+      $ivec_extractor_dir/diag_ubm \
+      $ivec_extractor_dir/full_ubm 
+    sid/train_ivector_extractor.sh --cmd "$train_cmd --mem 16G" \
+      --ivector-dim 400 --num-iters 5 \
+      $ivec_extractor_dir/full_ubm/final.ubm data/ \
+      $ivec_extractor_dir
+fi
+
+if [ ${stage} -le 3 ]; then
+    sid/extract_ivectors.sh --cmd "$train_cmd --mem 4G" --nj 80 \
+      $ivec_extractor_dir \
+      data/${train_set} \
+      data/${train_set}/ivecs
+    for rtask in ${recog_set}; do
+      sid/extract_ivectors.sh --cmd "$train_cmd --mem 4G" --nj 30 \
+        $ivec_extractor_dir \
+        data/${rtask} \
+        data/${rtask}/ivecs
     done
+fi
 
-    # remove utt having more than 2000 frames or less than 10 frames or
-    # remove utt having more than 400 characters or no more than 0 characters
-    remove_longshortdata.sh --maxchars 400 data/train data/${train_set}
-    remove_longshortdata.sh --maxchars 400 data/dev data/${train_dev}
-
-    # compute global CMVN
-    compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
-
+if [ ${stage} -le 4 ]; then
     # dump features for training
-    dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-        data/${train_set}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/train ${feat_tr_dir}
-    dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-        data/${train_dev}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/dev ${feat_dt_dir}
+    local/dump_with_ivec.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
+        data/${train_set}/feats.scp data/${train_set}/cmvn.ark data/${train_set}/ivecs exp/dump_feats/train ${feat_tr_dir}
+    local/dump_with_ivec.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
+        data/${dev_set}/feats.scp data/${train_set}/cmvn.ark data/${dev_set}/ivecs exp/dump_feats/dev ${feat_dt_dir}
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}; mkdir -p ${feat_recog_dir}
-        dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-            data/${rtask}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/recog/${rtask} \
+        local/dump_with_ivec.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
+            data/${rtask}/feats.scp data/${train_set}/cmvn.ark data/${rtask}/ivecs exp/dump_feats/recog/${rtask} \
             ${feat_recog_dir}
     done
 fi
 
+
 dict=data/lang_1char/${train_set}_units.txt
 echo "dictionary: ${dict}"
-if [ ${stage} -le 2 ]; then
+if [ ${stage} -le 5 ]; then
     ### Task dependent. You have to check non-linguistic symbols used in the corpus.
     echo "stage 2: Dictionary and Json Data Preparation"
     mkdir -p data/lang_1char/
@@ -151,7 +171,7 @@ if [ ${stage} -le 2 ]; then
     data2json.sh --feat ${feat_tr_dir}/feats.scp \
          data/${train_set} ${dict} > ${feat_tr_dir}/data.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp \
-         data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
+         data/${dev_set} ${dict} > ${feat_dt_dir}/data.json
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
         data2json.sh --feat ${feat_recog_dir}/feats.scp \
@@ -159,13 +179,15 @@ if [ ${stage} -le 2 ]; then
     done
 fi
 
+# The basic recipe has been run, so skip ahead!
+
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_adim${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_adim${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_ivecs
     if ${do_delta}; then
         expdir=${expdir}_delta
     fi
 else
-    expdir=exp/${train_set}_${backend}_${tag}
+    expdir=exp/${train_set}_${backend}_ivecs_${tag}
 fi
 mkdir -p ${expdir}
 
@@ -177,41 +199,41 @@ fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
 
-if [ ${stage} -le 3 ]; then
-    echo "stage 3: LM Preparation"
-    lmdatadir=data/local/lm_train
-    if [ ! -e ${lmdatadir} ]; then
-        mkdir -p ${lmdatadir}
-        gunzip -c db/TEDLIUM_release2/LM/*.en.gz | sed 's/ <\/s>//g' | local/join_suffix.py \
-            | text2token.py -n 1 \
-            > ${lmdatadir}/train.txt
-        text2token.py -s 1 -n 1 data/dev/text | cut -f 2- -d" " \
-            > ${lmdatadir}/valid.txt
-    fi
-    # use only 1 gpu
-    if [ ${ngpu} -gt 1 ]; then
-        echo "LM training does not support multi-gpu. signle gpu will be used."
-    fi
-    ${cuda_cmd} --gpu ${ngpu} ${lmexpdir}/train.log \
-        lm_train.py \
-        --ngpu ${ngpu} \
-        --backend ${backend} \
-        --verbose 1 \
-        --outdir ${lmexpdir} \
-        --train-label ${lmdatadir}/train.txt \
-        --valid-label ${lmdatadir}/valid.txt \
-        --resume ${lm_resume} \
-        --layer ${lm_layers} \
-        --unit ${lm_units} \
-        --opt ${lm_opt} \
-        --batchsize ${lm_batchsize} \
-        --epoch ${lm_epochs} \
-        --maxlen ${lm_maxlen} \
-        --dict ${dict}
-fi
+#if [ ${stage} -le 3 ]; then
+#    echo "stage 3: LM Preparation"
+#    lmdatadir=data/local/lm_train
+#    if [ ! -e ${lmdatadir} ]; then
+#        mkdir -p ${lmdatadir}
+#        gunzip -c db/TEDLIUM_release2/LM/*.en.gz | sed 's/ <\/s>//g' | local/join_suffix.py \
+#            | text2token.py -n 1 \
+#            > ${lmdatadir}/train.txt
+#        text2token.py -s 1 -n 1 data/dev/text | cut -f 2- -d" " \
+#            > ${lmdatadir}/valid.txt
+#    fi
+#    # use only 1 gpu
+#    if [ ${ngpu} -gt 1 ]; then
+#        echo "LM training does not support multi-gpu. signle gpu will be used."
+#    fi
+#    ${cuda_cmd} --gpu ${ngpu} ${lmexpdir}/train.log \
+#        lm_train.py \
+#        --ngpu ${ngpu} \
+#        --backend ${backend} \
+#        --verbose 1 \
+#        --outdir ${lmexpdir} \
+#        --train-label ${lmdatadir}/train.txt \
+#        --valid-label ${lmdatadir}/valid.txt \
+#        --resume ${lm_resume} \
+#        --layer ${lm_layers} \
+#        --unit ${lm_units} \
+#        --opt ${lm_opt} \
+#        --batchsize ${lm_batchsize} \
+#        --epoch ${lm_epochs} \
+#        --maxlen ${lm_maxlen} \
+#        --dict ${dict}
+#fi
 
-if [ ${stage} -le 4 ]; then
-    echo "stage 4: Network Training"
+if [ ${stage} -le 6 ]; then
+    echo "stage 6: Network Training"
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
         asr_train.py \
         --ngpu ${ngpu} \
@@ -245,14 +267,13 @@ if [ ${stage} -le 4 ]; then
         --epochs ${epochs}
 fi
 
-if [ ${stage} -le 5 ]; then
-    echo "stage 5: Decoding"
+if [ ${stage} -le 7 ]; then
+    echo "stage 7: Decoding"
     nj=32
 
     for rtask in ${recog_set}; do
     (
-        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
-        #_rnnlm${lm_weight}_${lmtag}
+        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}_tuesday
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
@@ -274,9 +295,9 @@ if [ ${stage} -le 5 ]; then
             --penalty ${penalty} \
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
-            --ctc-weight ${ctc_weight}
-            #--rnnlm ${lmexpdir}/rnnlm.model.best \
-            #--lm-weight ${lm_weight} &
+            --ctc-weight ${ctc_weight} \
+            --rnnlm ${lmexpdir}/rnnlm.model.best \
+            --lm-weight ${lm_weight} &
         wait
 
         score_sclite.sh --wer true ${expdir}/${decode_dir} ${dict}

@@ -39,7 +39,7 @@ aconv_chans=10
 aconv_filts=100
 
 # hybrid CTC/attention
-mtlalpha=0.2
+mtlalpha=0.0
 
 # label smoothing
 lsm_type=unigram
@@ -67,12 +67,12 @@ lm_resume=          # specify a snapshot file to resume LM training
 lmtag=              # tag for managing LMs
 
 # decoding parameter
-lm_weight=1.0
+lm_weight=0.4
 beam_size=30
 penalty=0.0
 maxlenratio=0.0
 minlenratio=0.0
-ctc_weight=0.3
+ctc_weight=0.0
 recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.best' or 'model.loss.best'
 
 # scheduled sampling option
@@ -101,41 +101,10 @@ train_dev=test_dev93
 train_test=test_eval92
 recog_set="test_dev93 test_eval92"
 
-#if [ ${stage} -le 0 ]; then
-##    ### Task dependent. You have to make data the following preparation part by yourself.
-##    ### But you can utilize Kaldi recipes in most cases
-##    echo "stage 0: Data preparation"
-##    local/wsj_data_prep.sh ${wsj0}/??-{?,??}.? ${wsj1}/??-{?,??}.?
-##    local/wsj_format_data.sh
-#fi
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
 feat_dt_dir=${dumpdir}/${train_dev}/delta${do_delta}; mkdir -p ${feat_dt_dir}
 if [ ${stage} -le 1 ]; then
-#    ### Task dependent. You have to design training and dev sets by yourself.
-#    ### But you can utilize Kaldi recipes in most cases
-#    echo "stage 1: Feature Generation"
-#    fbankdir=fbank
-#    # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
-#    for x in train_si284 test_dev93 test_eval92; do
-#        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 --write_utt2num_frames true \
-#            data/${x} exp/make_fbank/${x} ${fbankdir}
-#    done
-#
-#    # compute global CMVN
-#    compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
-#
-#    # dump features for training
-#    if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
-#    utils/create_split_dir.pl \
-#        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_set}/delta${do_delta}/storage \
-#        ${feat_tr_dir}/storage
-#    fi
-#    if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
-#    utils/create_split_dir.pl \
-#        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_dev}/delta${do_delta}/storage \
-#        ${feat_dt_dir}/storage
-#    fi
     dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
         data/${train_set}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/train ${feat_tr_dir}
     dump.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
@@ -179,7 +148,6 @@ if [ ${stage} -le 2 ]; then
     done
 fi
 
-
 # It takes about one day. If you just want to do end-to-end ASR without LM,
 # you can skip this and remove --rnnlm option in the recognition (stage 5)
 if [ -z ${lmtag} ]; then
@@ -190,60 +158,6 @@ if [ -z ${lmtag} ]; then
 fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
-
-#if [ ${stage} -le 3 ]; then
-#    echo "stage 3: LM Preparation"
-#    
-#    if [ $use_wordlm = true ]; then
-#        lmdatadir=data/local/wordlm_train
-#        lmdict=${lmdatadir}/wordlist_${lm_vocabsize}.txt
-#        mkdir -p ${lmdatadir}
-#        cat data/${train_set}/text | cut -f 2- -d" " > ${lmdatadir}/train_trans.txt
-#        zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z \
-#                | grep -v "<" | tr [a-z] [A-Z] > ${lmdatadir}/train_others.txt
-#        cat data/${train_dev}/text | cut -f 2- -d" " > ${lmdatadir}/valid.txt
-#        cat data/${train_test}/text | cut -f 2- -d" " > ${lmdatadir}/test.txt
-#        cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt > ${lmdatadir}/train.txt
-#        text2vocabulary.py -s ${lm_vocabsize} -o ${lmdict} ${lmdatadir}/train.txt
-#    else
-#        lmdatadir=data/local/lm_train
-#        lmdict=$dict
-#        mkdir -p ${lmdatadir}
-#        text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}/text \
-#            | cut -f 2- -d" " > ${lmdatadir}/train_trans.txt
-#        zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z \
-#            | grep -v "<" | tr [a-z] [A-Z] \
-#            | text2token.py -n 1 | cut -f 2- -d" " > ${lmdatadir}/train_others.txt
-#        text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_dev}/text \
-#            | cut -f 2- -d" " > ${lmdatadir}/valid.txt
-#        text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_test}/text \
-#                | cut -f 2- -d" " > ${lmdatadir}/test.txt
-#        cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt > ${lmdatadir}/train.txt
-#    fi
-#
-#    # use only 1 gpu
-#    if [ ${ngpu} -gt 1 ]; then
-#        echo "LM training does not support multi-gpu. signle gpu will be used."
-#    fi
-#    ${cuda_cmd} --gpu ${ngpu} ${lmexpdir}/train.log \
-#        lm_train.py \
-#        --ngpu ${ngpu} \
-#        --backend ${backend} \
-#        --verbose 1 \
-#        --outdir ${lmexpdir} \
-#        --train-label ${lmdatadir}/train.txt \
-#        --valid-label ${lmdatadir}/valid.txt \
-#        --test-label ${lmdatadir}/test.txt \
-#        --resume ${lm_resume} \
-#        --layer ${lm_layers} \
-#        --unit ${lm_units} \
-#        --opt ${lm_opt} \
-#        --batchsize ${lm_batchsize} \
-#        --epoch ${lm_epochs} \
-#        --maxlen ${lm_maxlen} \
-#        --dict ${lmdict}
-#fi
-
 
 if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
@@ -299,7 +213,6 @@ if [ ${stage} -le 4 ]; then
         --epochs ${epochs}
 fi
 
-
 if [ ${stage} -le 8 ]; then
     echo "stage 8: Decoding without LM"
     nj=32
@@ -335,10 +248,9 @@ if [ ${stage} -le 8 ]; then
     wait
     echo "Finished"
 fi
-exit
 
 if [ ${stage} -le 9 ]; then
-    echo "stage 8: Decoding with LM"
+    echo "stage 9: Decoding with LM"
     nj=32
 
     for rtask in ${recog_set}; do

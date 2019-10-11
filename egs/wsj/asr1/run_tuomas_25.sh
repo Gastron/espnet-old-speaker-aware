@@ -59,7 +59,7 @@ use_wordlm=false     # false means to train/use a character LM
 lm_vocabsize=65000  # effective only for word LMs
 lm_layers=2         # 2 for character LMs
 lm_units=650       # 650 for character LMs
-lm_opt=adam          # adam for character LMs
+lm_opt=adam         # adam for character LMs
 lm_batchsize=1024    # 1024 for character LMs
 lm_epochs=20        # number of epochs
 lm_maxlen=150        # 150 for character LMs
@@ -79,8 +79,10 @@ recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.bes
 samp_prob=0.0
 
 # data
-wsj0=/export/corpora5/LDC/LDC93S6B
-wsj1=/export/corpora5/LDC/LDC94S13B
+#wsj0=/export/corpora5/LDC/LDC93S6B
+#wsj1=/export/corpora5/LDC/LDC94S13B
+#Our data is in the other wsj format, see Kaldi wsj recipe
+corpus=/m/teamwork/t40511_asr/c/wsj
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -96,54 +98,60 @@ set -e
 set -u
 set -o pipefail
 
-train_set=train_si284
-train_dev=test_dev93
-train_test=test_eval92
-recog_set="test_dev93 test_eval92"
+emb_model="tuomas-embedding-models/AM_model.25"
 
-#if [ ${stage} -le 0 ]; then
-##    ### Task dependent. You have to make data the following preparation part by yourself.
-##    ### But you can utilize Kaldi recipes in most cases
-##    echo "stage 0: Data preparation"
-##    local/wsj_data_prep.sh ${wsj0}/??-{?,??}.? ${wsj1}/??-{?,??}.?
-##    local/wsj_format_data.sh
-#fi
+
+train_set=train_si284_tuomas_25
+dev_set=test_dev93_tuomas_25
+recog_set="test_dev93_tuomas_25 test_eval92_tuomas_25"
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
-feat_dt_dir=${dumpdir}/${train_dev}/delta${do_delta}; mkdir -p ${feat_dt_dir}
+feat_dt_dir=${dumpdir}/${dev_set}/delta${do_delta}; mkdir -p ${feat_dt_dir}
 if [ ${stage} -le 1 ]; then
-#    ### Task dependent. You have to design training and dev sets by yourself.
-#    ### But you can utilize Kaldi recipes in most cases
-#    echo "stage 1: Feature Generation"
-#    fbankdir=fbank
-#    # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
-#    for x in train_si284 test_dev93 test_eval92; do
-#        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 --write_utt2num_frames true \
-#            data/${x} exp/make_fbank/${x} ${fbankdir}
-#    done
-#
-#    # compute global CMVN
-#    compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
-#
-#    # dump features for training
-#    if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
-#    utils/create_split_dir.pl \
-#        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_set}/delta${do_delta}/storage \
-#        ${feat_tr_dir}/storage
-#    fi
-#    if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
-#    utils/create_split_dir.pl \
-#        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_dev}/delta${do_delta}/storage \
-#        ${feat_dt_dir}/storage
-#    fi
-    dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-        data/${train_set}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/train ${feat_tr_dir}
-    dump.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
-        data/${train_dev}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/dev ${feat_dt_dir}
+    echo "stage 0: Data preparation"
+    echo "NOTE: You should have the basic data directories from the normal run.sh already"
+    utils/copy_data_dir.sh data/train_si284 data/${train_set}
+    utils/copy_data_dir.sh data/test_dev93 data/${dev_set}
+    for rname in $recog_set; do
+      utils/copy_data_dir.sh data/test_dev93 data/${rname}
+    done
+    cp data/train_si284/cmvn.ark data/${train_set}
+fi
+
+if [ ${stage} -le 2 ]; then
+    #compute spk embs
+    #this is expensive because the model needs a GPU
+    local/compute_speaker_embeddings.sh --cmd "$emb_cmd" --nj 6 \
+      --embmodel "$emb_model" \
+      --extract_script "local/extract_embedding_30mfcc.py" \
+      data/${train_set}
+fi
+
+if [ ${stage} -le 3 ]; then
+    local/compute_speaker_embeddings.sh --cmd "$emb_cmd" --nj 1 \
+      --embmodel "$emb_model" \
+      --extract_script local/extract_embedding_30mfcc.py \
+      data/${dev_set}
+fi
+
+if [ ${stage} -le 4 ]; then
+    for rtask in ${recog_set}; do
+      local/compute_speaker_embeddings.sh --cmd "$emb_cmd" --nj 1 \
+        --embmodel "$emb_model" \
+        --extract_script local/extract_embedding_30mfcc.py \
+        data/${rtask}
+    done
+fi
+
+if [ ${stage} -le 4 ]; then
+    local/dump_with_emb.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
+        data/${train_set}/feats.scp data/${train_set}/cmvn.ark data/${train_set}/embs.scp exp/dump_feats/${train_set} ${feat_tr_dir}
+    local/dump_with_emb.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
+        data/${dev_set}/feats.scp data/${train_set}/cmvn.ark data/${dev_set}/embs.scp exp/dump_feats/${dev_set} ${feat_dt_dir}
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}; mkdir -p ${feat_recog_dir}
-        dump.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
-            data/${rtask}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/recog/${rtask} \
+        local/dump_with_emb.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
+            data/${rtask}/feats.scp data/${train_set}/cmvn.ark data/${rtask}/embs.scp exp/dump_feats/recog/${rtask} \
             ${feat_recog_dir}
     done
 fi
@@ -152,7 +160,7 @@ dict=data/lang_1char/${train_set}_units.txt
 nlsyms=data/lang_1char/non_lang_syms.txt
 
 echo "dictionary: ${dict}"
-if [ ${stage} -le 2 ]; then
+if [ ${stage} -le 5 ]; then
     ### Task dependent. You have to check non-linguistic symbols used in the corpus.
     echo "stage 2: Dictionary and Json Data Preparation"
     mkdir -p data/lang_1char/
@@ -171,14 +179,13 @@ if [ ${stage} -le 2 ]; then
     data2json.sh --feat ${feat_tr_dir}/feats.scp --nlsyms ${nlsyms} \
          data/${train_set} ${dict} > ${feat_tr_dir}/data.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
+         data/${dev_set} ${dict} > ${feat_dt_dir}/data.json
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
         data2json.sh --feat ${feat_recog_dir}/feats.scp \
             --nlsyms ${nlsyms} data/${rtask} ${dict} > ${feat_recog_dir}/data.json
     done
 fi
-
 
 # It takes about one day. If you just want to do end-to-end ASR without LM,
 # you can skip this and remove --rnnlm option in the recognition (stage 5)
@@ -191,7 +198,7 @@ fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
 
-#if [ ${stage} -le 3 ]; then
+#if [ ${stage} -le 5 ]; then
 #    echo "stage 3: LM Preparation"
 #    
 #    if [ $use_wordlm = true ]; then
@@ -201,7 +208,7 @@ mkdir -p ${lmexpdir}
 #        cat data/${train_set}/text | cut -f 2- -d" " > ${lmdatadir}/train_trans.txt
 #        zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z \
 #                | grep -v "<" | tr [a-z] [A-Z] > ${lmdatadir}/train_others.txt
-#        cat data/${train_dev}/text | cut -f 2- -d" " > ${lmdatadir}/valid.txt
+#        cat data/${dev_set}/text | cut -f 2- -d" " > ${lmdatadir}/valid.txt
 #        cat data/${train_test}/text | cut -f 2- -d" " > ${lmdatadir}/test.txt
 #        cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt > ${lmdatadir}/train.txt
 #        text2vocabulary.py -s ${lm_vocabsize} -o ${lmdict} ${lmdatadir}/train.txt
@@ -214,7 +221,7 @@ mkdir -p ${lmexpdir}
 #        zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z \
 #            | grep -v "<" | tr [a-z] [A-Z] \
 #            | text2token.py -n 1 | cut -f 2- -d" " > ${lmdatadir}/train_others.txt
-#        text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_dev}/text \
+#        text2token.py -s 1 -n 1 -l ${nlsyms} data/${dev_set}/text \
 #            | cut -f 2- -d" " > ${lmdatadir}/valid.txt
 #        text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_test}/text \
 #                | cut -f 2- -d" " > ${lmdatadir}/test.txt
@@ -246,7 +253,7 @@ mkdir -p ${lmexpdir}
 
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_ivec
     if [ "${lsm_type}" != "" ]; then
         expdir=${expdir}_lsm${lsm_type}${lsm_weight}
     fi
@@ -258,8 +265,8 @@ else
 fi
 mkdir -p ${expdir}
 
-if [ ${stage} -le 4 ]; then
-    echo "stage 4: Network Training"
+if [ ${stage} -le 7 ]; then
+    echo "stage 7: Network Training"
 
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
         asr_train.py \
@@ -299,7 +306,6 @@ if [ ${stage} -le 4 ]; then
         --epochs ${epochs}
 fi
 
-
 if [ ${stage} -le 8 ]; then
     echo "stage 8: Decoding without LM"
     nj=32
@@ -335,7 +341,6 @@ if [ ${stage} -le 8 ]; then
     wait
     echo "Finished"
 fi
-exit
 
 if [ ${stage} -le 9 ]; then
     echo "stage 8: Decoding with LM"
