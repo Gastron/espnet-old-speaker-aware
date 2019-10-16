@@ -17,13 +17,13 @@ set -o pipefail
 
 xvec_extractor_dir=exp/xvec_${tag}
 mkdir -p $xvec_extractor_dir
-train_set=train_xvec_local
-recog_set="dev_xvec_local test_xvec_local"
+train_set=train_si284_xvec_local
+recog_set="test_dev93_xvec_local test_eval92_xvec_local"
 
 if [ ${stage} -le 0 ]; then
-  utils/copy_data_dir.sh data/train_trim data/${train_set}
-  utils/copy_data_dir.sh data/dev data/dev_xvec_local
-  utils/copy_data_dir.sh data/test data/test_xvec_local
+  utils/copy_data_dir.sh data/train_si284 data/${train_set}
+  utils/copy_data_dir.sh data/test_dev93 data/test_dev93_xvec_local
+  utils/copy_data_dir.sh data/test_eval92 data/test_eval92_xvec_local
   #Train:
   rm -f data/${train_set}/feats.scp
   steps/make_mfcc.sh --write-utt2num-frames true \
@@ -37,9 +37,9 @@ if [ ${stage} -le 0 ]; then
   for name in $recog_set; do
     rm -f data/${name}/feats.scp
     steps/make_mfcc.sh --write-utt2num-frames true \
-      --mfcc-config conf/xvec_mfcc.conf --nj 12 --cmd "$train_cmd" \
+      --mfcc-config conf/mfcc.conf --nj 8 --cmd "$train_cmd" \
       data/${name} exp/make_mfcc/${name} mfcc 
-    sid/compute_vad_decision.sh --nj 12 --cmd "$train_cmd" \
+    sid/compute_vad_decision.sh --nj 8 --cmd "$train_cmd" \
       data/${name} exp/make_vad/${name} mfcc
     utils/fix_data_dir.sh data/${name}
   done
