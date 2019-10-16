@@ -24,7 +24,7 @@ scp=$1
 cvmnark=$2
 meanvec=$3
 ivecdir=$4
-ivecscp=$ivecdir/ivector_abs.scp
+ivecscp=$ivecdir/ivector.scp #used to be ivector_abs.scp, but now the paths are correct without that, and there is no _abs version
 logdir=$5
 dumpdir=$6
 

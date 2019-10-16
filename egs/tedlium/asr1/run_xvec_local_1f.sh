@@ -9,7 +9,7 @@
 # general configuration
 backend=pytorch
 stage=-1       # start from -1 if you need to start from data download
-ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=1         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -39,7 +39,7 @@ aconv_filts=100
 mtlalpha=0.5
 
 # minibatch related
-batchsize=15
+batchsize=30
 maxlen_in=800  # if input length  > maxlen_in, batchsize is automatically reduced
 maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduced
 
@@ -84,10 +84,9 @@ set -u
 set -o pipefail
 
 
-mkdir -p $ivec_extractor_dir
-train_set=train_trim_ivec_fixed
-dev_set=dev_trim_ivec_fixed
-recog_set="dev_ivec_fixed test_ivec_fixed"
+train_set=train_trim_xvec_local_1f
+dev_set=dev_trim_xvec_local_1f
+recog_set="dev_xvec_local_1f test_xvec_local_1f"
 
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
@@ -96,9 +95,14 @@ if [ ${stage} -le 0 ]; then
     echo "NOTE: You should have the basic data directories from the normal run.sh already"
     utils/copy_data_dir.sh data/train_trim data/${train_set}
     utils/copy_data_dir.sh data/dev_trim data/${dev_set}
-    utils/copy_data_dir.sh data/dev data/dev_ivec
-    utils/copy_data_dir.sh data/test data/test_ivec
-    cp data/train_trim/cmvn.ark data/train_trim_ivec/
+    utils/copy_data_dir.sh data/dev data/dev_xvec_local_1f
+    utils/copy_data_dir.sh data/test data/test_xvec_local_1f
+    cp data/train_trim/cmvn.ark data/train_trim_xvec_local_1f/
+
+    ln -sf $(pwd)/exp/xvec_1f/xvectors_train_xvec_local/ data/train_trim_xvec_local_1f/xvectors
+    ln -sf $(pwd)/exp/xvec_1f/xvectors_dev_xvec_local/ data/dev_trim_xvec_local_1f/xvectors
+    ln -sf $(pwd)/exp/xvec_1f/xvectors_dev_xvec_local/ data/dev_xvec_local_1f/xvectors
+    ln -sf $(pwd)/exp/xvec_1f/xvectors_test_xvec_local/ data/test_xvec_local_1f/xvectors
 fi
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
@@ -106,14 +110,14 @@ feat_dt_dir=${dumpdir}/${dev_set}/delta${do_delta}; mkdir -p ${feat_dt_dir}
 
 if [ ${stage} -le 4 ]; then
     # dump features for training
-    local/dump_with_ivec_nolda.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-        data/${train_set}/feats.scp data/${train_set}/cmvn.ark data/${train_set}/ivecs exp/dump_feats/${train_set} ${feat_tr_dir}
-    local/dump_with_ivec.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-        data/${dev_set}/feats.scp data/${train_set}/cmvn.ark data/${dev_set}/ivecs exp/dump_feats/dev ${feat_dt_dir}
+    local/dump_with_xvec_no_lda.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta --scaleup false \
+        data/${train_set}/feats.scp data/${train_set}/cmvn.ark data/${train_set}/xvectors exp/dump_feats/${train_set} ${feat_tr_dir}
+    local/dump_with_xvec_no_lda.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta --scaleup false \
+        data/${dev_set}/feats.scp data/${train_set}/cmvn.ark data/${dev_set}/xvectors exp/dump_feats/${dev_set} ${feat_dt_dir}
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}; mkdir -p ${feat_recog_dir}
-        local/dump_with_ivec.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
-            data/${rtask}/feats.scp data/${train_set}/cmvn.ark data/${rtask}/ivecs exp/dump_feats/recog/${rtask} \
+        local/dump_with_xvec_no_lda.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta --scaleup false \
+            data/${rtask}/feats.scp data/${train_set}/cmvn.ark data/${rtask}/xvectors exp/dump_feats/recog/${rtask} \
             ${feat_recog_dir}
     done
 fi
@@ -145,7 +149,7 @@ fi
 # The basic recipe has been run, so skip ahead!
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_adim${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_ivecs
+    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_adim${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_sampprob${samp_prob}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_xvec_local_1fs
     if ${do_delta}; then
         expdir=${expdir}_delta
     fi
@@ -231,12 +235,53 @@ if [ ${stage} -le 6 ]; then
 fi
 
 if [ ${stage} -le 7 ]; then
-    echo "stage 7: Decoding"
+    echo "stage 7: Decoding without LM"
     nj=32
 
     for rtask in ${recog_set}; do
     (
-        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}_tuesday
+        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
+        feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
+
+        # split data
+        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json
+
+        #### use CPU for decoding
+        ngpu=0
+
+        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
+            asr_recog.py \
+            --ngpu ${ngpu} \
+            --backend ${backend} \
+            --debugmode ${debugmode} \
+            --verbose ${verbose} \
+            --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
+            --result-label ${expdir}/${decode_dir}/data.JOB.json \
+            --model ${expdir}/results/${recog_model}  \
+            --beam-size ${beam_size} \
+            --penalty ${penalty} \
+            --maxlenratio ${maxlenratio} \
+            --minlenratio ${minlenratio} \
+            --ctc-weight ${ctc_weight} &
+        #    --rnnlm ${lmexpdir}/rnnlm.model.best \
+        #    --lm-weight ${lm_weight} &
+        wait
+
+        score_sclite.sh --wer true ${expdir}/${decode_dir} ${dict}
+
+    ) &
+    done
+    wait
+    echo "Finished"
+fi
+
+if [ ${stage} -le 8 ]; then
+    echo "stage 8: Decoding with LM"
+    nj=32
+
+    for rtask in ${recog_set}; do
+    (
+        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
@@ -270,4 +315,3 @@ if [ ${stage} -le 7 ]; then
     wait
     echo "Finished"
 fi
-
