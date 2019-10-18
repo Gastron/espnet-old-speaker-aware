@@ -32,17 +32,20 @@ if [ ${stage} -le 0 ]; then
   sid/compute_vad_decision.sh --nj 40 --cmd "$train_cmd" \
     data/${train_set} exp/make_vad/${train_set} mfcc
   utils/fix_data_dir.sh data/${train_set}
+fi
 
+if [ ${stage} -le 1 ]; then
   #recog_sets
   for name in $recog_set; do
     rm -f data/${name}/feats.scp
     steps/make_mfcc.sh --write-utt2num-frames true \
-      --mfcc-config conf/mfcc.conf --nj 8 --cmd "$train_cmd" \
+      --mfcc-config conf/xvec_mfcc.conf --nj 8 --cmd "$train_cmd" \
       data/${name} exp/make_mfcc/${name} mfcc 
     sid/compute_vad_decision.sh --nj 8 --cmd "$train_cmd" \
       data/${name} exp/make_vad/${name} mfcc
     utils/fix_data_dir.sh data/${name}
   done
+  exit 0
 fi
 
 if [ $stage -le 4 ]; then
@@ -87,9 +90,9 @@ local/nnet3/xvector/tuning/run_xvector_${tag}.sh --stage $stage --train-stage -1
 #NOTE if just_optimize=true, script ends here:
 if [ $stage -le 9 ] && [ $just_optimize == true ]; then
   #NOTE: dev set is hardcoded here.
-  sid/nnet3/xvector/extract_xvectors.sh --cmd "$train_cmd --mem 4G" --nj 12 \
-    $xvec_extractor_dir data/dev_xvec_local \
-    $xvec_extractor_dir/xvectors_dev_xvec_local
+  sid/nnet3/xvector/extract_xvectors.sh --cmd "$train_cmd --mem 4G" --nj 8 \
+    $xvec_extractor_dir data/test_dev93_xvec_local \
+    $xvec_extractor_dir/xvectors_test_dev93_xvec_local
   exit 0
 fi
 
@@ -101,9 +104,10 @@ if [ $stage -le 9 ]; then
 
   # Extract x-vectors used in the evaluation.
   for name in $recog_set; do
-    sid/nnet3/xvector/extract_xvectors.sh --cmd "$train_cmd --mem 4G" --nj 12 \
+    sid/nnet3/xvector/extract_xvectors.sh --cmd "$train_cmd --mem 4G" --nj 8 \
       $xvec_extractor_dir data/${name} \
       $xvec_extractor_dir/xvectors_${name}
   done
 fi
+
 

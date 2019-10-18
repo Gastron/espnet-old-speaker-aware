@@ -48,6 +48,7 @@ if [ $stage -le 1 ]; then
       data/${name} exp/make_vad/${name} mfcc
     utils/fix_data_dir.sh data/${name}
   done
+  exit 0
 fi
 
 
@@ -67,7 +68,8 @@ fi
 if [ $stage -le 3 ]; then
   # In this stage, we train the i-vector extractor.
 
-  sid/train_ivector_extractor.sh --cmd "$train_cmd --mem 16G" \
+  sid/train_ivector_extractor.sh --cmd "$train_cmd --mem 4G" \
+    --num-threads 1 \
     --cleanup false \
     --ivector-dim $ivec_dim --num-iters $num_iter \
     $ivec_ubm_dir/full_ubm/final.ubm data/${train_set} \
@@ -81,6 +83,7 @@ if [ $stage -le 4 ] && [ $just_optimize == true ]; then
      $ivec_extractor_dir data/test_dev93_ivec_local \
      $ivec_extractor_dir/ivectors_test_dev_93_ivec_local
 
+   source ../../tedlium/asr1/spkemb-venv/bin/activate
    python compute_ari_with_embeddings.py $ivec_extractor_dir/ivectors_test_dev_93_ivec_local/ivector.scp
    data/test_dev93_ivec_local/utt2spk
    exit 0 
@@ -96,4 +99,14 @@ if [ $stage -le 4 ]; then
       $ivec_extractor_dir data/${name} \
       $ivec_extractor_dir/ivectors_$name 
   done
+fi
+
+if [ ${stage} -le 5 ]; then
+  # Compute the mean vector for centering the evaluation i-vectors.
+  $train_cmd $ivec_extractor_dir/ivectors_${train_set}/log/compute_mean.log \
+    ivector-mean scp:$ivec_extractor_dir/ivectors_${train_set}/ivector.scp \
+    $ivec_extractor_dir/ivectors_${train_set}/mean.vec || exit 1;
+
+  #NOTE: LDA is not implemented in this script, yet.
+
 fi
