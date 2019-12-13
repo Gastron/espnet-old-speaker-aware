@@ -24,7 +24,7 @@ fi
 featsscp=$1
 cmvnark=$2
 xvecdir=$3
-xvecscp=$xvecdir/xvector_abs.scp
+xvecscp=$xvecdir/xvector.scp # used to be xvector_abs.scp, changed for fixed data
 logdir=$4
 dumpdir=$5
 

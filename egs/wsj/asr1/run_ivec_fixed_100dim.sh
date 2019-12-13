@@ -321,7 +321,7 @@ if [ ${stage} -le 8 ]; then
     echo "Finished"
 fi
 
-if [ ${stage} -le 8 ]; then
+if [ ${stage} -le 9 ]; then
     echo "stage 8: Decoding with LM"
     nj=32
 
@@ -361,8 +361,7 @@ if [ ${stage} -le 8 ]; then
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}
 
-    ) &
+    ) 
     done
-    wait
     echo "Finished"
 fi
